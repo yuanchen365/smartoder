@@ -311,12 +311,37 @@ stop_monitoring = False
 
 # Sidebar 重新定義按鈕區
 # 為了避免重複定義 ID，我們使用一個 container
+# Sidebar 重新定義按鈕區
+# 為了避免重複定義 ID，我們使用一個 container
 with st.sidebar:
-    if st.button("🚀 啟動監控", disabled=st.session_state.monitoring or not st.session_state.logged_in):
-        start_monitoring = True
+    # 監控控制區
+    col_start, col_stop = st.columns(2)
+    with col_start:
+        if st.button("🚀 啟動監控", disabled=st.session_state.monitoring or not st.session_state.logged_in, use_container_width=True):
+            start_monitoring = True
     
-    if st.button("🛑 停止監控", disabled=not st.session_state.monitoring):
-        stop_monitoring = True
+    with col_stop:
+        if st.button("🛑 停止監控", disabled=not st.session_state.monitoring, use_container_width=True):
+            stop_monitoring = True
+
+    st.markdown("---")
+    # 登出區
+    if st.session_state.logged_in:
+        if st.button("👋 登出系統", type="secondary", use_container_width=True):
+            try:
+                if st.session_state.api:
+                    st.session_state.api.logout()
+            except Exception as e:
+                pass # Ignore logout errors
+            
+            # 清除狀態
+            st.session_state.logged_in = False
+            st.session_state.api = None
+            st.session_state.monitoring = False
+            st.session_state.positions_df = pd.DataFrame()
+            st.session_state.log_messages = []
+            st.success("已登出")
+            st.rerun()
 
 # 處理啟動邏輯 (在參數定義之後)
 if start_monitoring:
@@ -339,6 +364,15 @@ if start_monitoring:
             ),
             daemon=True
         )
+        # Adding script run context for thread if needed, but simple thread usually works if not accessing st context heavily.
+        # monitor_logic accesses st.session_state. It might work if session is global.
+        # Ideally we pass add_report_ctx(thread)
+        try:
+            from streamlit.runtime.scriptrunner import add_script_run_ctx
+            add_script_run_ctx(thread)
+        except ImportError:
+            pass # Old streamlit version or different structure
+
         st.session_state.monitor_thread = thread
         thread.start()
         st.rerun()
