@@ -61,8 +61,21 @@ def monitor_logic(api_key, secret_key, pfx_path, pfx_pass,
                 log("所有標的已處理完畢，停止監控")
                 st.session_state.monitoring = False
                 break
-                
-            snapshots = api.snapshots(codes)
+            
+            # 修正：api.snapshots 需要傳入 Contract 物件列表，而非單純的代碼字串
+            # 錯誤 'str' object has no attribute 'dict' 通常是因為傳入了字串導致內部序列化失敗
+            contracts_list = []
+            for c in codes:
+                contract = api.Contracts.Stocks.get(c)
+                if contract:
+                    contracts_list.append(contract)
+            
+            if not contracts_list:
+                log("無法取得監控標的之合約資訊，稍後重試...")
+                time.sleep(5)
+                continue
+
+            snapshots = api.snapshots(contracts_list)
             
             for snap in snapshots:
                 code = snap.code
