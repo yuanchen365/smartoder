@@ -48,11 +48,38 @@ if 'positions_df' not in st.session_state:
 # --- Sidebar: 帳號與控制 ---
 st.sidebar.title("🔐 帳號與憑證")
 
-api_key = st.sidebar.text_input("API Key", value=os.getenv("SHIOAJI_API_KEY", ""), type="password")
-secret_key = st.sidebar.text_input("Secret Key", value=os.getenv("SHIOAJI_SECRET_KEY", ""), type="password")
-person_id = st.sidebar.text_input("Person ID (身分證)", value=os.getenv("SHIOAJI_CERT_PERSON_ID", ""))
-pfx_path = st.sidebar.text_input("憑證路徑 (.pfx)", value=os.getenv("SHIOAJI_CERT_PATH", "C:/Sinopac/Sinopac.pfx"))
-pfx_pass = st.sidebar.text_input("憑證密碼", value=os.getenv("SHIOAJI_CERT_PASSWORD", ""), type="password")
+# Helper function to get config safely
+def get_config(key, default=""):
+    # Try getting from Streamlit secrets first (for Cloud)
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except FileNotFoundError:
+        pass # secrets.toml not found
+    except Exception:
+        pass
+    # Fallback to os.getenv (for Local .env)
+    return os.getenv(key, default)
+
+api_key = st.sidebar.text_input("API Key", value=get_config("SHIOAJI_API_KEY"), type="password")
+secret_key = st.sidebar.text_input("Secret Key", value=get_config("SHIOAJI_SECRET_KEY"), type="password")
+person_id = st.sidebar.text_input("Person ID (身分證)", value=get_config("SHIOAJI_CERT_PERSON_ID"))
+
+# PFX File Handling
+use_uploaded_pfx = st.sidebar.toggle("使用上傳憑證 (Cloud)", value=True)
+pfx_path = ""
+pfx_pass = st.sidebar.text_input("憑證密碼", value=get_config("SHIOAJI_CERT_PASSWORD"), type="password")
+
+if use_uploaded_pfx:
+    uploaded_pfx = st.sidebar.file_uploader("上傳 .pfx 憑證", type=["pfx"])
+    if uploaded_pfx:
+        # Save to a temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pfx") as tmp_file:
+            tmp_file.write(uploaded_pfx.read())
+            pfx_path = tmp_file.name
+else:
+    pfx_path = st.sidebar.text_input("本機憑證路徑 (.pfx)", value=get_config("SHIOAJI_CERT_PATH", "D:/Sinopac/Sinopac.pfx"))
 
 if st.sidebar.button("登入並取得庫存"):
     if not api_key or not secret_key or not pfx_path or not pfx_pass or not person_id:
