@@ -1,6 +1,7 @@
 import streamlit as st
 import shioaji as sj
 import threading
+import time
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -40,6 +41,10 @@ if 'max_prices' not in st.session_state:
     st.session_state.max_prices = {}
 if 'positions_df' not in st.session_state:
     st.session_state.positions_df = pd.DataFrame()
+if 'latest_prices' not in st.session_state:
+    st.session_state.latest_prices = {}
+if 'stop_monitor_event' not in st.session_state:
+    st.session_state.stop_monitor_event = None
 
 # ==========================================
 # UI 介面
@@ -199,6 +204,27 @@ if st.session_state.logged_in and st.session_state.api:
                  else:
                      st.session_state.positions_df.at[idx, '監控狀態'] = "未監控"
 
+        # 使用最新的即時價格更新 DataFrame (如果有)
+        if 'latest_prices' in st.session_state:
+            for idx, row in st.session_state.positions_df.iterrows():
+                code = row['代碼']
+                if code in st.session_state.latest_prices:
+                    # 更新現價
+                    st.session_state.positions_df.at[idx, '現價'] = st.session_state.latest_prices[code]
+                    # 重新計算預估出場價 (因為現價變了，如果現價創高，預估出場價也要變)
+                    # 注意：這裡的邏輯需要跟 monitor_logic 保持一致，或者是純粹顯示
+                    # monitor_logic 裡已經有 trailing stop 邏輯。
+                    # 這裡為了顯示正確，我們重算一次簡單的 (或者直接拿 monitor_logic 的結果? 但 logic 沒存結果)
+                    # 簡單重算：
+                    base_high = row['區間最高價']
+                    current_p = st.session_state.latest_prices[code]
+                    if current_p > base_high:
+                         st.session_state.positions_df.at[idx, '區間最高價'] = current_p
+                         base_high = current_p
+                    
+                    if not row['長期投資']:
+                        st.session_state.positions_df.at[idx, '預估出場價'] = base_high * (1 - trailing_stop / 100)
+
         edited_df = st.data_editor(
             st.session_state.positions_df,
             use_container_width=True,
@@ -281,9 +307,10 @@ with st.sidebar:
         if st.button("🚀 啟動監控", disabled=st.session_state.monitoring or not st.session_state.logged_in, use_container_width=True):
             start_monitoring = True
     
-    with col_stop:
         if st.button("🛑 停止監控", disabled=not st.session_state.monitoring, use_container_width=True):
             stop_monitoring = True
+            
+    auto_refresh = st.checkbox("監控時自動更新介面 (3秒)", value=True, disabled=not st.session_state.monitoring)
 
     st.markdown("---")
     # 登出區
@@ -299,6 +326,29 @@ with st.sidebar:
             st.session_state.logged_in = False
             st.session_state.api = None
             st.session_state.monitoring = False
+            stop_monitoring = True
+            
+    auto_refresh = st.checkbox("監控時自動更新介面", value=True, disabled=not st.session_state.monitoring)
+    refresh_seconds = st.slider("刷新間隔 (秒)", min_value=1, max_value=60, value=3, disabled=not auto_refresh)
+
+    st.markdown("---")
+    # 登出區
+    if st.session_state.logged_in:
+        if st.button("👋 登出系統", type="secondary", use_container_width=True):
+            try:
+                if st.session_state.api:
+                    st.session_state.api.logout()
+            except Exception as e:
+                pass # Ignore logout errors
+            
+            # 清除狀態
+            st.session_state.logged_in = False
+            st.session_state.api = None
+            st.session_state.monitoring = False
+            # Signal stop
+            if st.session_state.stop_monitor_event:
+                st.session_state.stop_monitor_event.set()
+                
             st.session_state.positions_df = pd.DataFrame()
             st.session_state.log_messages = []
             st.success("已登出")
@@ -315,10 +365,17 @@ if start_monitoring:
         st.sidebar.warning("沒有可監控的標的")
     else:
         st.session_state.monitoring = True
+        # Reset event
+        st.session_state.stop_monitor_event = threading.Event()
+        
         thread = threading.Thread(
             target=monitor_logic,
             args=(
-                api_key, secret_key, pfx_path, pfx_pass,
+                st.session_state.api,
+                st.session_state.log_messages,
+                st.session_state.latest_prices,
+                st.session_state.max_prices,
+                st.session_state.stop_monitor_event,
                 trailing_stop, order_type,
                 targets, 
                 start_date.strftime("%Y-%m-%d")
@@ -341,5 +398,12 @@ if start_monitoring:
 # 處理停止邏輯
 if stop_monitoring:
     st.session_state.monitoring = False
+    if st.session_state.stop_monitor_event:
+        st.session_state.stop_monitor_event.set()
     log("...正在停止監控...")
+    st.rerun()
+
+# 監控中自動刷新
+if st.session_state.monitoring and 'auto_refresh' in locals() and auto_refresh:
+    time.sleep(refresh_seconds)
     st.rerun()

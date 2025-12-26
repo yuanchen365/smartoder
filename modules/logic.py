@@ -1,27 +1,37 @@
-import streamlit as st
+
 import pandas as pd
 import time
 from datetime import datetime
-from .utils import log
+
 from .api_service import place_sell_order
 
-def monitor_logic(api_key, secret_key, pfx_path, pfx_pass, 
+def monitor_logic(api, log_list, latest_prices, max_prices, stop_event,
                   trailing_stop_pct, order_type_str, targets, start_date_str):
     """
     背景監控邏輯 (執行緒函式)
+    args:
+        api: Shioaji API instance
+        log_list: Shared list for logs (st.session_state.log_messages)
+        latest_prices: Shared dict for real-time prices (st.session_state.latest_prices)
+        max_prices: Shared dict for max prices (st.session_state.max_prices)
+        stop_event: threading.Event to control loop
+        ...
     """
     
-    api = st.session_state.api
+    def log(message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        full_msg = f"[{timestamp}] {message}"
+        log_list.insert(0, full_msg)
+        if len(log_list) > 100:
+            log_list.pop()
+
     log("=== 監控服務已啟動 ===")
     
     if not targets:
         log("無監控標的，監控服務停止")
-        st.session_state.monitoring = False
+        stop_event.set()
         return
 
-    # 初始化最高價紀錄
-    st.session_state.max_prices = {}
-    
     # --- 1. 預先抓取歷史最高價 (從指定交易日開始) ---
     log(f"正在抓取歷史資料 (起始日: {start_date_str})...")
     
@@ -46,24 +56,22 @@ def monitor_logic(api_key, secret_key, pfx_path, pfx_pass,
                 log(f"[{code}] 查無歷史 K 線，將以現價為基準")
             
             if initial_high > 0:
-                 st.session_state.max_prices[code] = initial_high
+                 max_prices[code] = initial_high
                  
         except Exception as e:
             log(f"[{code}] 抓取歷史資料失敗: {e}")
 
     log(f"監控標的共 {len(targets)} 檔: {list(targets.keys())}")
 
-    while st.session_state.monitoring:
+    while not stop_event.is_set():
         try:
             # 2. 抓取 Snapshot
             codes = list(targets.keys())
             if not codes:
                 log("所有標的已處理完畢，停止監控")
-                st.session_state.monitoring = False
+                stop_event.set()
                 break
             
-            # 修正：api.snapshots 需要傳入 Contract 物件列表，而非單純的代碼字串
-            # 錯誤 'str' object has no attribute 'dict' 通常是因為傳入了字串導致內部序列化失敗
             contracts_list = []
             for c in codes:
                 contract = api.Contracts.Stocks.get(c)
@@ -86,14 +94,17 @@ def monitor_logic(api_key, secret_key, pfx_path, pfx_pass,
                 qty = targets[code]['qty']
                 
                 # --- A. 更新最高價 ---
-                if code not in st.session_state.max_prices:
-                    st.session_state.max_prices[code] = current_price
+                # 更新即時價格到 Global State 供 UI 讀取
+                latest_prices[code] = current_price
+
+                if code not in max_prices:
+                    max_prices[code] = current_price
                     log(f"[{code}] 監控開始，初始價格: {current_price}")
                 else:
-                    if current_price > st.session_state.max_prices[code]:
-                         st.session_state.max_prices[code] = current_price
+                    if current_price > max_prices[code]:
+                         max_prices[code] = current_price
                 
-                max_price = st.session_state.max_prices[code]
+                max_price = max_prices[code]
                 
                 # --- B. 計算邏輯 ---
                 exit_price = max_price * (1 - trailing_stop_pct / 100)
@@ -110,8 +121,8 @@ def monitor_logic(api_key, secret_key, pfx_path, pfx_pass,
                     place_sell_order(api, code, qty, order_type_str, trigger_reason)
                     # 移除監控
                     del targets[code]
-                    if code in st.session_state.max_prices:
-                        del st.session_state.max_prices[code]
+                    if code in max_prices:
+                        del max_prices[code]
             
             time.sleep(3) 
             
