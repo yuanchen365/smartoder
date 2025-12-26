@@ -290,43 +290,29 @@ if st.session_state.logged_in and not st.session_state.positions_df.empty:
 
 # 修正：
 # 我們將 Sidebar 的 "按鈕 UI" 保留在上面，但 "按鈕邏輯" 移到下面。
-# 但 `if st.sidebar.button(...)` 必須包住邏輯。
-# 我們可以用一個 flag。
 
-start_monitoring = False
-stop_monitoring = False
+# Callback functions
+def on_start_btn_click():
+    st.session_state.do_start_monitoring = True
+
+def on_stop_btn_click():
+    st.session_state.do_stop_monitoring = True
 
 # Sidebar 重新定義按鈕區
-# 為了避免重複定義 ID，我們使用一個 container
-# Sidebar 重新定義按鈕區
-# 為了避免重複定義 ID，我們使用一個 container
 with st.sidebar:
     # 監控控制區
     col_start, col_stop = st.columns(2)
     with col_start:
-        if st.button("🚀 啟動監控", disabled=st.session_state.monitoring or not st.session_state.logged_in, use_container_width=True):
-            start_monitoring = True
+        st.button("🚀 啟動監控", 
+                 disabled=st.session_state.monitoring or not st.session_state.logged_in, 
+                 use_container_width=True,
+                 on_click=on_start_btn_click)
     
-        if st.button("🛑 停止監控", disabled=not st.session_state.monitoring, use_container_width=True):
-            stop_monitoring = True
-            
-    auto_refresh = st.checkbox("監控時自動更新介面 (3秒)", value=True, disabled=not st.session_state.monitoring)
-
-    st.markdown("---")
-    # 登出區
-    if st.session_state.logged_in:
-        if st.button("👋 登出系統", type="secondary", use_container_width=True):
-            try:
-                if st.session_state.api:
-                    st.session_state.api.logout()
-            except Exception as e:
-                pass # Ignore logout errors
-            
-            # 清除狀態
-            st.session_state.logged_in = False
-            st.session_state.api = None
-            st.session_state.monitoring = False
-            stop_monitoring = True
+    with col_stop:
+        st.button("🛑 停止監控", 
+                 disabled=not st.session_state.monitoring, 
+                 use_container_width=True,
+                 on_click=on_stop_btn_click)
             
     auto_refresh = st.checkbox("監控時自動更新介面", value=True, disabled=not st.session_state.monitoring)
     refresh_seconds = st.slider("刷新間隔 (秒)", min_value=1, max_value=60, value=3, disabled=not auto_refresh)
@@ -339,13 +325,12 @@ with st.sidebar:
                 if st.session_state.api:
                     st.session_state.api.logout()
             except Exception as e:
-                pass # Ignore logout errors
+                pass 
             
-            # 清除狀態
             st.session_state.logged_in = False
             st.session_state.api = None
             st.session_state.monitoring = False
-            # Signal stop
+            
             if st.session_state.stop_monitor_event:
                 st.session_state.stop_monitor_event.set()
                 
@@ -354,56 +339,73 @@ with st.sidebar:
             st.success("已登出")
             st.rerun()
 
-# 處理啟動邏輯 (在參數定義之後)
-if start_monitoring:
+# 邏輯處理區 (Check session state flags)
+
+# 1. Start Monitoring Logic
+if st.session_state.get('do_start_monitoring', False):
+    # Reset flag immediately
+    st.session_state.do_start_monitoring = False
+    
+    st.toast("收到啟動指令，處理中...") 
+    
     monitoring_df = st.session_state.positions_df[~st.session_state.positions_df['長期投資']]
     targets = {}
     for _, row in monitoring_df.iterrows():
         targets[row['代碼']] = {'cost': row['成本'], 'qty': row['股數']}
     
     if not targets:
-        st.sidebar.warning("沒有可監控的標的")
+        st.sidebar.warning("沒有可監控的標的 (所有庫存皆設為長期投資？)")
     else:
-        st.session_state.monitoring = True
-        # Reset event
-        st.session_state.stop_monitor_event = threading.Event()
-        
-        thread = threading.Thread(
-            target=monitor_logic,
-            args=(
-                st.session_state.api,
-                st.session_state.log_messages,
-                st.session_state.latest_prices,
-                st.session_state.max_prices,
-                st.session_state.stop_monitor_event,
-                trailing_stop, order_type,
-                targets, 
-                start_date.strftime("%Y-%m-%d")
-            ),
-            daemon=True
-        )
-        # Adding script run context for thread if needed, but simple thread usually works if not accessing st context heavily.
-        # monitor_logic accesses st.session_state. It might work if session is global.
-        # Ideally we pass add_report_ctx(thread)
         try:
-            from streamlit.runtime.scriptrunner import add_script_run_ctx
-            add_script_run_ctx(thread)
-        except ImportError:
-            pass # Old streamlit version or different structure
+            st.session_state.monitoring = True
+            st.session_state.stop_monitor_event = threading.Event()
+            
+            log(f"準備啟動監控，標的: {list(targets.keys())}")
+        
+            thread = threading.Thread(
+                target=monitor_logic,
+                args=(
+                    st.session_state.api,
+                    st.session_state.log_messages,
+                    st.session_state.latest_prices,
+                    st.session_state.max_prices,
+                    st.session_state.stop_monitor_event,
+                    trailing_stop, order_type,
+                    targets, 
+                    start_date.strftime("%Y-%m-%d")
+                ),
+                daemon=True
+            )
+            
+            try:
+                from streamlit.runtime.scriptrunner import add_script_run_ctx
+                add_script_run_ctx(thread)
+            except ImportError:
+                pass 
 
-        st.session_state.monitor_thread = thread
-        thread.start()
-        st.rerun()
+            st.session_state.monitor_thread = thread
+            thread.start()
+            st.toast("監控執行緒已啟動！")
+            st.rerun()
 
-# 處理停止邏輯
-if stop_monitoring:
+        except Exception as e:
+            st.error(f"啟動監控失敗: {e}")
+            st.session_state.monitoring = False
+            log(f"啟動監控發生例外: {e}")
+
+# 2. Stop Monitoring Logic
+if st.session_state.get('do_stop_monitoring', False):
+    st.session_state.do_stop_monitoring = False
+    
     st.session_state.monitoring = False
     if st.session_state.stop_monitor_event:
         st.session_state.stop_monitor_event.set()
     log("...正在停止監控...")
     st.rerun()
 
+
 # 監控中自動刷新
 if st.session_state.monitoring and 'auto_refresh' in locals() and auto_refresh:
     time.sleep(refresh_seconds)
     st.rerun()
+
