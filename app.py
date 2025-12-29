@@ -165,6 +165,11 @@ if st.session_state.logged_in and st.session_state.api:
             old_map = st.session_state.positions_df.set_index('代碼')['長期投資'].to_dict()
             new_df['長期投資'] = new_df['代碼'].map(old_map).fillna(False)
         st.session_state.positions_df = new_df
+        
+        # [BugFix] 手動刷新後，將最新的現價同步到 latest_prices，避免下方邏輯用 stale data 覆蓋
+        if not new_df.empty and '現價' in new_df.columns:
+            for _, row in new_df.iterrows():
+                st.session_state.latest_prices[row['代碼']] = row['現價']
 
     if not st.session_state.positions_df.empty:
         # 更新歷史最高價

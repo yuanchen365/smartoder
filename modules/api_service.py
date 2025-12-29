@@ -9,18 +9,41 @@ def get_positions_df(api):
     """取得庫存並轉換為整潔的 DataFrame"""
     try:
         positions = api.list_positions(unit=constant.Unit.Share)
+        
+        # 1. 取得所有庫存代碼的 Snapshot 以獲取最新價格 (list_positions 的價格可能是舊的)
+        realtime_prices = {}
+        valid_positions = [p for p in positions if p.quantity > 0]
+        
+        if valid_positions:
+            contracts = []
+            for p in valid_positions:
+                contract = api.Contracts.Stocks.get(p.code)
+                if contract:
+                    contracts.append(contract)
+            
+            if contracts:
+                try:
+                    snapshots = api.snapshots(contracts)
+                    for snap in snapshots:
+                        if snap.close > 0:
+                            realtime_prices[snap.code] = snap.close
+                except Exception as e:
+                    log(f"取得即時報價 Snapshot 失敗: {e}")
+
         data = []
-        for p in positions:
-            if p.quantity > 0: # 只顯示有庫存的
-                data.append({
-                    "代碼": p.code,
-                    "名稱": p.code, # Shioaji Position 物件可能不含名稱，需額外查詢
-                    "股數": int(p.quantity),
-                    "成本": float(p.price),
-                    "現價": float(p.last_price) if hasattr(p, 'last_price') else 0.0,
-                    "監控狀態": "未監控",
-                    "長期投資": False # 預設不勾選
-                })
+        for p in valid_positions:
+            # 優先使用 Snapshot 的價格，若無則回退到 p.last_price (可能為 0 或昨日收盤)
+            real_price = realtime_prices.get(p.code, float(p.last_price) if hasattr(p, 'last_price') else 0.0)
+            
+            data.append({
+                "代碼": p.code,
+                "名稱": p.code, # Shioaji Position 物件可能不含名稱，需額外查詢
+                "股數": int(p.quantity),
+                "成本": float(p.price),
+                "現價": real_price,
+                "監控狀態": "未監控",
+                "長期投資": False # 預設不勾選
+            })
         
         if not data:
             return pd.DataFrame(columns=["代碼", "名稱", "股數", "成本", "現價", "監控狀態", "長期投資", "預估出場價", "區間最高價"])
