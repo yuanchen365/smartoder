@@ -3,3 +3,4 @@ shioaji
 pandas
 python-dotenv
 plotly
+yfinance
