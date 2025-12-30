@@ -14,7 +14,7 @@ from modules.logic import monitor_logic
 from modules.chart_utils import draw_stock_chart
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # ==========================================
 # 初始化與設定
@@ -66,53 +66,103 @@ def get_config(key, default=""):
     # Fallback to os.getenv (for Local .env)
     return os.getenv(key, default)
 
+# Simulation Mode Toggle (Default True per User Rules)
+simulation_mode = st.sidebar.toggle("模擬環境 (Simulation)", value=True)
+
 api_key = st.sidebar.text_input("API Key", value=get_config("SHIOAJI_API_KEY"), type="password")
 secret_key = st.sidebar.text_input("Secret Key", value=get_config("SHIOAJI_SECRET_KEY"), type="password")
-person_id = st.sidebar.text_input("Person ID (身分證)", value=get_config("SHIOAJI_CERT_PERSON_ID"))
+
+if not simulation_mode:
+    person_id = st.sidebar.text_input("Person ID (身分證)", value=get_config("SHIOAJI_CERT_PERSON_ID"))
+else:
+    person_id = ""
 
 # PFX File Handling
-use_uploaded_pfx = st.sidebar.toggle("使用上傳憑證 (Cloud)", value=True)
-pfx_path = ""
-pfx_pass = st.sidebar.text_input("憑證密碼", value=get_config("SHIOAJI_CERT_PASSWORD"), type="password")
+if not simulation_mode:
+    use_uploaded_pfx = st.sidebar.toggle("使用上傳憑證 (Cloud)", value=True)
+    pfx_path = ""
+    pfx_pass = st.sidebar.text_input("憑證密碼", value=get_config("SHIOAJI_CERT_PASSWORD"), type="password")
 
-if use_uploaded_pfx:
-    uploaded_pfx = st.sidebar.file_uploader("上傳 .pfx 憑證", type=["pfx"])
-    if uploaded_pfx:
-        # Save to a temp file
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pfx") as tmp_file:
-            tmp_file.write(uploaded_pfx.read())
-            pfx_path = tmp_file.name
+    if use_uploaded_pfx:
+        uploaded_pfx = st.sidebar.file_uploader("上傳 .pfx 憑證", type=["pfx"])
+        if uploaded_pfx:
+            # Save to a temp file
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pfx") as tmp_file:
+                tmp_file.write(uploaded_pfx.read())
+                pfx_path = tmp_file.name
+    else:
+        pfx_path = st.sidebar.text_input("本機憑證路徑 (.pfx)", value=get_config("SHIOAJI_CERT_PATH", "D:/Sinopac/Sinopac.pfx"))
 else:
-    pfx_path = st.sidebar.text_input("本機憑證路徑 (.pfx)", value=get_config("SHIOAJI_CERT_PATH", "D:/Sinopac/Sinopac.pfx"))
+    # Simulation defaults (Hide PFX inputs)
+    pfx_path = ""
+    pfx_pass = ""
+
+
 
 if st.sidebar.button("登入並取得庫存"):
-    if not api_key or not secret_key or not pfx_path or not pfx_pass or not person_id:
-        st.sidebar.error("請輸入完整登入資訊")
+    if not api_key or not secret_key:
+        st.sidebar.error("請輸入 API Key 與 Secret Key")
+    elif not simulation_mode and (not pfx_path or not pfx_pass or not person_id):
+        st.sidebar.error("正式環境需輸入完整憑證資訊 (身分證, PFX, 密碼)")
     else:
         try:
-            if st.session_state.api is None:
-                st.session_state.api = sj.Shioaji()
+            # 1. Cleanup previous session if any
+            if st.session_state.api:
+                try:
+                    st.session_state.api.logout()
+                except:
+                    pass
+            st.session_state.api = None
+            st.session_state.logged_in = False
+
+            # 2. Initialize Fresh Instance
+            st.session_state.api = sj.Shioaji(simulation=simulation_mode)
             
-            # Login
+            # 3. Login
+            now = datetime.now()
+            utc_now = datetime.utcnow()
+            log(f"正在登入... (環境: {'模擬' if simulation_mode else '正式'})")
+            log(f"系統時間檢查: Local={now.strftime('%H:%M:%S')}, UTC={utc_now.strftime('%H:%M:%S')}")
+            
             st.session_state.api.login(
                 api_key=api_key,
                 secret_key=secret_key
             )
-            # Activate CA
-            st.session_state.api.activate_ca(
-                ca_path=pfx_path,
-                ca_passwd=pfx_pass,
-                person_id=person_id
-            )
+            log("API Token 取得成功")
+            
+            # 4. Activate CA (Only for Production)
+            if not simulation_mode:
+                log("正在驗證憑證 (CA)...")
+                st.session_state.api.activate_ca(
+                    ca_path=pfx_path,
+                    ca_passwd=pfx_pass,
+                    person_id=person_id
+                )
+                log("憑證驗證成功")
             
             st.session_state.logged_in = True
-            st.sidebar.success("登入成功！憑證已啟用")
-            log("系統登入成功")
+            st.sidebar.success(f"登入成功！({'模擬' if simulation_mode else '正式'}環境)")
+            log(f"系統登入完成")
+            st.rerun() # Force rerun to refresh UI state
             
         except Exception as e:
-            st.sidebar.error(f"登入失敗: {e}")
-            log(f"登入失敗: {e}")
+            st.session_state.logged_in = False
+            error_msg = str(e)
+            st.sidebar.error(f"登入失敗: {error_msg}")
+            log(f"登入失敗: {error_msg}")
+            
+            if "expired" in error_msg.lower():
+                st.sidebar.error("""
+                ❌ **Token 或憑證已過期**
+                
+                可能原因：
+                1. **電腦時間不準確**：請同步您的電腦時間 (Windows 設定 -> 時間與語言 -> 立即同步)。
+                2. **環境設定錯誤**：您可能使用了「正式環境」的 Key 登入「模擬環境」，反之亦然。請檢查上方的「模擬環境」開關。
+                3. **連線請求過多**：請稍等 1 分鐘後再試。
+                """)
+            elif "451" in error_msg:
+                st.sidebar.error("❌ 連線數過多 (Too Many Connections)，請稍後再試。")
 
 
 # ==========================================

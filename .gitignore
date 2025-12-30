@@ -12,3 +12,12 @@ __pycache__/
 # Virtual Environment
 venv/
 env/
+
+# Logs and Results
+*.log
+result.json
+debug_output.txt
+test_login.py
+
+# Secrets
+*.pfx
