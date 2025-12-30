@@ -18,32 +18,63 @@ def draw_stock_chart(api, code, days=100):
         end_date = datetime.now()
         start_date = end_date - timedelta(days=250) 
         
-        kbars = api.kbars(
-            contract, 
-            start=start_date.strftime("%Y-%m-%d"), 
-            end=end_date.strftime("%Y-%m-%d")
-        )
-        df = pd.DataFrame({**kbars})
+        # Try Shioaji First
+        has_data = False
+        df_daily = pd.DataFrame()
         
-        if df.empty:
-            st.warning("查無 K 線資料")
-            return
+        try:
+            kbars = api.kbars(
+                contract, 
+                start=start_date.strftime("%Y-%m-%d"), 
+                end=end_date.strftime("%Y-%m-%d")
+            )
+            df = pd.DataFrame({**kbars})
             
-        # 轉換為日期格式
-        df['ts'] = pd.to_datetime(df['ts'])
-        df.set_index('ts', inplace=True)
+            if not df.empty:
+                # 轉換為日期格式
+                df['ts'] = pd.to_datetime(df['ts'])
+                df.set_index('ts', inplace=True)
+                
+                # Shioaji API 回傳的是分鐘資料，若要看日 K 需自行轉為日頻率
+                df_daily = df.resample('D').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                })
+                # 移除沒有交易的日期 (假日)
+                df_daily.dropna(subset=['Open'], inplace=True)
+                has_data = True
+        except Exception as e:
+            # st.warning(f"API 抓取失敗: {e}")
+            pass
+
+        # Try yfinance Fallback
+        if not has_data:
+            try:
+                import yfinance as yf
+                yf_code = f"{code}.TW"
+                # st.toast(f"切換至 yfinance 抓取 {yf_code}...")
+                df_yf = yf.download(yf_code, start=start_date, end=end_date, progress=False)
+                
+                if not df_yf.empty:
+                     # yfinance 已經是日線，且 Index 是 Datetime
+                     # 欄位名稱通常對應，但可能是 MultiIndex (Price, Ticker)
+                     if isinstance(df_yf.columns, pd.MultiIndex):
+                         df_yf.columns = df_yf.columns.get_level_values(0)
+                         
+                     df_daily = df_yf[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                     # yfinance Volume sometimes is 0 for indices, but for stocks it's fine.
+                     has_data = True
+            except Exception as ex:
+                # st.error(f"yfinance 失敗: {ex}")
+                pass
         
-        # --- 關鍵修正：將分鐘線 Resample 為日線 ---
-        # Shioaji API 回傳的是分鐘資料，若要看日 K 需自行轉為日頻率
-        df_daily = df.resample('D').agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
-        })
-        # 移除沒有交易的日期 (假日)
-        df_daily.dropna(subset=['Open'], inplace=True)
+        if not has_data or df_daily.empty:
+            st.warning(f"查無 {code} K 線資料 (來源: API & Yahoo)")
+            return
+
         
         # 計算 MA
         df_daily['MA60'] = df_daily['Close'].rolling(window=60).mean()

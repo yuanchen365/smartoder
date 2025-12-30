@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 
 from .api_service import place_sell_order
+import yfinance as yf # Fallback source
 
 def monitor_logic(api, log_list, latest_prices, max_prices, stop_event,
                   trailing_stop_pct, order_type_str, targets, start_date_str):
@@ -44,19 +45,51 @@ def monitor_logic(api, log_list, latest_prices, max_prices, stop_event,
                 
             # 抓取 K 線 (日 K)
             today_str = datetime.now().strftime("%Y-%m-%d")
-            kbars = api.kbars(contract, start=start_date_str, end=today_str)
-            df_k = pd.DataFrame({**kbars})
+            log(f"[{code}] 請求 K 線範圍: {start_date_str} ~ {today_str} (Source: Shioaji)")
             
-            initial_high = 0.0
-            if not df_k.empty:
-                historical_high = float(df_k['High'].max())
-                initial_high = historical_high
-                log(f"[{code}] 歷史區間最高價: {historical_high}")
+            historical_high = 0.0
+            has_data = False
+            
+            # --- Tier 1: Shioaji API ---
+            try:
+                kbars = api.kbars(contract, start=start_date_str, end=today_str, timeout=10000)
+                df_k = pd.DataFrame({**kbars})
+                if not df_k.empty:
+                    historical_high = float(df_k['High'].max())
+                    log(f"[{code}] Shioaji 歷史最高價: {historical_high}")
+                    has_data = True
+                else:
+                    log(f"[{code}] Shioaji 查無資料 (Empty)")
+            except Exception as e:
+                log(f"[{code}] Shioaji API 錯誤: {e}")
+
+            # --- Tier 2: yfinance Fallback ---
+            if not has_data:
+                try:
+                    yf_code = f"{code}.TW"
+                    log(f"[{code}] 嘗試使用 yfinance 抓取 ({yf_code})...")
+                    yf_df = yf.download(yf_code, start=start_date_str, end=today_str, progress=False)
+                    
+                    if not yf_df.empty:
+                        # yfinance High column might be multi-level if not flattened, but usually simple download is fine or check structure
+                        # yfinance 0.2.x returns MultiIndex columns sometimes. Safe max.
+                        if 'High' in yf_df.columns:
+                            h_col = yf_df['High']
+                            historical_high = float(h_col.max()) # Works for Series or single-col DF
+                            log(f"[{code}] yfinance 歷史最高價: {historical_high}")
+                            has_data = True
+                        else:
+                            log(f"[{code}] yfinance 資料格式不符 (缺少 High)")
+                    else:
+                        log(f"[{code}] yfinance 亦無資料")
+                except Exception as e:
+                    log(f"[{code}] yfinance 失敗: {e}")
+
+            # --- Final Decision ---
+            if has_data and historical_high > 0:
+                 max_prices[code] = historical_high
             else:
-                log(f"[{code}] 查無歷史 K 線，將以現價為基準")
-            
-            if initial_high > 0:
-                 max_prices[code] = initial_high
+                 log(f"[{code}] ⚠ 查無任何歷史 K 線，將以稍後抓取的現價為基準")
                  
         except Exception as e:
             log(f"[{code}] 抓取歷史資料失敗: {e}")

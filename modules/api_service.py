@@ -4,6 +4,8 @@ import pandas as pd
 from datetime import datetime
 import streamlit as st
 from .utils import log
+import yfinance as yf # Fallback
+
 
 def get_positions_df(api):
     """取得庫存並轉換為整潔的 DataFrame"""
@@ -117,11 +119,27 @@ def get_historical_highs(api, codes, start_date_str):
     for i, code in enumerate(codes):
         try:
             contract = api.Contracts.Stocks.get(code)
+            has_data = False
+            
+            # Tier 1: Shioaji API
             if contract:
                 kbars = api.kbars(contract, start=start_date_str, end=today_str)
                 df_k = pd.DataFrame({**kbars})
                 if not df_k.empty:
                     results[code] = float(df_k['High'].max())
+                    has_data = True
+            
+            # Tier 2: yfinance Fallback
+            if not has_data:
+                try:
+                    yf_code = f"{code}.TW"
+                    yf_df = yf.download(yf_code, start=start_date_str, end=today_str, progress=False)
+                    if not yf_df.empty and 'High' in yf_df.columns:
+                        h_col = yf_df['High']
+                        results[code] = float(h_col.max())
+                except:
+                    pass
+                    
         except Exception:
             pass
         prog_bar.progress((i + 1) / total)
